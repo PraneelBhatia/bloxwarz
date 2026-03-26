@@ -22,11 +22,8 @@ export interface GameState {
   };
   moveCount: number;
   tilesJson: string;
-  players: Array<{
-    sessionId: string;
-    assignedElement: string;
-    connected: boolean;
-  }>;
+  player1: { sessionId: string; assignedElement: string; connected: boolean };
+  player2: { sessionId: string; assignedElement: string; connected: boolean };
 }
 
 export class NetworkClient {
@@ -41,36 +38,27 @@ export class NetworkClient {
   async createRoom(): Promise<string> {
     this.room = await this.client.create('game');
     this.setupListeners();
-    // Wait briefly for initial state sync that includes the room code
+    // Wait for 'welcome' message from server with room code
     return new Promise<string>((resolve) => {
-      const checkCode = () => {
-        const state = this.room?.state as GameState | undefined;
-        if (state?.roomCode) {
-          resolve(state.roomCode);
-        } else {
-          setTimeout(checkCode, 100);
-        }
-      };
-      checkCode();
+      this.room!.onMessage('welcome', (data: { roomCode: string; element: string }) => {
+        resolve(data.roomCode);
+      });
     });
   }
 
   async joinByCode(code: string): Promise<void> {
-    // Look up room ID from the server's HTTP endpoint
     const response = await fetch(`${HTTP_URL}/api/room-by-code/${code.toUpperCase()}`);
     if (!response.ok) {
       throw new Error('Room not found');
     }
     const data = await response.json();
-    const roomId = data.roomId;
-
-    this.room = await this.client.joinById(roomId);
+    this.room = await this.client.joinById(data.roomId);
     this.setupListeners();
   }
 
   private setupListeners() {
     if (!this.room) return;
-    this.room.onStateChange((state: GameState) => {
+    this.room.onMessage('state', (state: GameState) => {
       if (this.onStateChange) {
         this.onStateChange(state);
       }

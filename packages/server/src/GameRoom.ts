@@ -14,29 +14,67 @@ import {
   checkWinCondition,
   getLevel,
 } from '@fbwb/shared';
-import { GameStateSchema, BlockSchema, PlayerSchema, PositionSchema } from './GameState.js';
+import { GameStateSchema } from './GameState.js';
 import { generateRoomCode, removeRoomCode } from './roomCodes.js';
+
+interface PlainBlock {
+  position: { x: number; y: number };
+  orientation: string;
+  element: string;
+  alive: boolean;
+}
+
+interface PlainPlayer {
+  sessionId: string;
+  assignedElement: string;
+  connected: boolean;
+}
+
+interface PlainGameState {
+  phase: string;
+  levelId: number;
+  roomCode: string;
+  moveCount: number;
+  tilesJson: string;
+  fireBlock: PlainBlock;
+  waterBlock: PlainBlock;
+  player1: PlainPlayer;
+  player2: PlainPlayer;
+}
 
 export class GameRoom extends Room<GameStateSchema> {
   maxClients = 2;
 
   private currentTiles: TileType[][] = [];
   private currentLevel: LevelData | undefined;
+  private playerCount = 0;
+
+  private gameState: PlainGameState = {
+    phase: 'waiting',
+    levelId: 0,
+    roomCode: '',
+    moveCount: 0,
+    tilesJson: '',
+    fireBlock: { position: { x: 0, y: 0 }, orientation: 'standing', element: 'fire', alive: true },
+    waterBlock: { position: { x: 0, y: 0 }, orientation: 'standing', element: 'water', alive: true },
+    player1: { sessionId: '', assignedElement: '', connected: false },
+    player2: { sessionId: '', assignedElement: '', connected: false },
+  };
 
   onCreate() {
-    const state = new GameStateSchema();
-    this.setState(state);
+    // Colyseus requires a Schema instance — keep it empty
+    this.setState(new GameStateSchema());
 
     const code = generateRoomCode(this.roomId);
-    state.roomCode = code;
+    this.gameState.roomCode = code;
 
     this.onMessage('move', (client, data: { direction: string }) => {
       this.handleMove(client, data.direction as Direction);
     });
 
     this.onMessage('restart', () => {
-      if (this.state.levelId > 0) {
-        this.loadLevel(this.state.levelId);
+      if (this.gameState.levelId > 0) {
+        this.loadLevel(this.gameState.levelId);
       }
     });
 
@@ -46,41 +84,55 @@ export class GameRoom extends Room<GameStateSchema> {
   }
 
   onJoin(client: Client) {
-    const player = new PlayerSchema();
-    player.sessionId = client.sessionId;
-    player.connected = true;
+    this.playerCount++;
 
-    if (this.state.players.length === 0) {
-      player.assignedElement = Element.Fire;
+    if (this.playerCount === 1) {
+      this.gameState.player1.sessionId = client.sessionId;
+      this.gameState.player1.assignedElement = Element.Fire;
+      this.gameState.player1.connected = true;
     } else {
-      player.assignedElement = Element.Water;
+      this.gameState.player2.sessionId = client.sessionId;
+      this.gameState.player2.assignedElement = Element.Water;
+      this.gameState.player2.connected = true;
     }
 
-    this.state.players.push(player);
+    // Send room code and assigned element directly to the joining client
+    client.send('welcome', {
+      roomCode: this.gameState.roomCode,
+      element: this.playerCount === 1 ? Element.Fire : Element.Water,
+    });
+
+    // Send current state to the newly joined client
+    client.send('state', this.gameState);
 
     // When both players have joined, load level 1
-    if (this.state.players.length === 2) {
+    if (this.playerCount === 2) {
       this.loadLevel(1);
     }
   }
 
+  private getPlayer(sessionId: string): PlainPlayer | null {
+    if (this.gameState.player1.sessionId === sessionId) return this.gameState.player1;
+    if (this.gameState.player2.sessionId === sessionId) return this.gameState.player2;
+    return null;
+  }
+
   handleMove(client: Client, direction: Direction) {
-    // Find which element this client controls
-    const player = this.state.players.find((p) => p.sessionId === client.sessionId);
+    const player = this.getPlayer(client.sessionId);
     if (!player) return;
 
     const element = player.assignedElement as Element;
-    const blockSchema = element === Element.Fire ? this.state.fireBlock : this.state.waterBlock;
+    const block = element === Element.Fire ? this.gameState.fireBlock : this.gameState.waterBlock;
 
     // Skip if block is dead or game is not playing
-    if (!blockSchema.alive || this.state.phase !== 'playing') return;
+    if (!block.alive || this.gameState.phase !== 'playing') return;
 
-    // Build a BlockState from the schema for shared logic
+    // Build a BlockState from the plain object for shared logic
     const blockState: BlockState = {
-      position: { x: blockSchema.position.x, y: blockSchema.position.y },
-      orientation: blockSchema.orientation as BlockOrientation,
+      position: { x: block.position.x, y: block.position.y },
+      orientation: block.orientation as BlockOrientation,
       element,
-      alive: blockSchema.alive,
+      alive: block.alive,
     };
 
     // Compute the roll
@@ -105,13 +157,13 @@ export class GameRoom extends Room<GameStateSchema> {
       }
     }
 
-    // Apply move to schema state
-    blockSchema.position.x = rolled.position.x;
-    blockSchema.position.y = rolled.position.y;
-    blockSchema.orientation = rolled.orientation;
+    // Apply move
+    block.position.x = rolled.position.x;
+    block.position.y = rolled.position.y;
+    block.orientation = rolled.orientation;
 
     // Increment move count
-    this.state.moveCount++;
+    this.gameState.moveCount++;
 
     // Check hazard
     const updatedBlock: BlockState = {
@@ -121,7 +173,7 @@ export class GameRoom extends Room<GameStateSchema> {
     };
     const fpTiles = getFootprintTiles(updatedBlock, this.currentTiles);
     if (checkHazard(updatedBlock, fpTiles)) {
-      blockSchema.alive = false;
+      block.alive = false;
     }
 
     // Check for switches
@@ -135,40 +187,44 @@ export class GameRoom extends Room<GameStateSchema> {
 
         if (isMatchingSwitch) {
           this.currentTiles = activateSwitch(this.currentTiles, this.currentLevel.switchEffects[key]);
-          this.state.tilesJson = JSON.stringify(this.currentTiles);
+          this.gameState.tilesJson = JSON.stringify(this.currentTiles);
         }
       }
     }
 
     // Check win condition
-    const fireBlock = this.buildBlockState(this.state.fireBlock, Element.Fire);
-    const waterBlock = this.buildBlockState(this.state.waterBlock, Element.Water);
+    const fireBlock = this.buildBlockState(this.gameState.fireBlock, Element.Fire);
+    const waterBlock = this.buildBlockState(this.gameState.waterBlock, Element.Water);
     if (checkWinCondition(fireBlock, waterBlock, this.currentTiles)) {
-      this.state.phase = 'completed';
+      this.gameState.phase = 'completed';
     }
+
+    // Broadcast updated state to all clients
+    this.broadcast('state', this.gameState);
   }
 
   async onLeave(client: Client, consented: boolean) {
-    const player = this.state.players.find((p) => p.sessionId === client.sessionId);
+    const player = this.getPlayer(client.sessionId);
     if (player) {
       player.connected = false;
+      this.broadcast('state', this.gameState);
     }
 
     if (!consented) {
       try {
         await this.allowReconnection(client, 30);
-        // Client reconnected
         if (player) {
           player.connected = true;
+          this.broadcast('state', this.gameState);
         }
       } catch {
-        // Reconnection timed out — player is gone
+        // Reconnection timed out
       }
     }
   }
 
   onDispose() {
-    removeRoomCode(this.state.roomCode);
+    removeRoomCode(this.gameState.roomCode);
   }
 
   loadLevel(levelId: number) {
@@ -178,19 +234,20 @@ export class GameRoom extends Room<GameStateSchema> {
     this.currentLevel = level;
     this.currentTiles = level.tiles.map((row: TileType[]) => [...row]);
 
-    this.state.levelId = levelId;
-    this.state.phase = 'playing';
-    this.state.moveCount = 0;
-    this.state.tilesJson = JSON.stringify(this.currentTiles);
+    this.gameState.levelId = levelId;
+    this.gameState.phase = 'playing';
+    this.gameState.moveCount = 0;
+    this.gameState.tilesJson = JSON.stringify(this.currentTiles);
 
-    // Set fire block
-    this.applyBlockStart(this.state.fireBlock, level.fireStart, Element.Fire);
-    // Set water block
-    this.applyBlockStart(this.state.waterBlock, level.waterStart, Element.Water);
+    this.applyBlockStart(this.gameState.fireBlock, level.fireStart, Element.Fire);
+    this.applyBlockStart(this.gameState.waterBlock, level.waterStart, Element.Water);
+
+    // Broadcast updated state to all clients
+    this.broadcast('state', this.gameState);
   }
 
   private applyBlockStart(
-    block: BlockSchema,
+    block: PlainBlock,
     start: { position: { x: number; y: number }; orientation: BlockOrientation },
     element: Element,
   ) {
@@ -201,7 +258,7 @@ export class GameRoom extends Room<GameStateSchema> {
     block.alive = true;
   }
 
-  private buildBlockState(block: BlockSchema, element: Element): BlockState {
+  private buildBlockState(block: PlainBlock, element: Element): BlockState {
     return {
       position: { x: block.position.x, y: block.position.y },
       orientation: block.orientation as BlockOrientation,
