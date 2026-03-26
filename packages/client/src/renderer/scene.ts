@@ -30,7 +30,7 @@ export class GameRenderer {
     // perspective where the grid runs diagonally.
     const distance = 40;
     const elevationAngle = 30 * (Math.PI / 180); // 30° from horizontal
-    const rotationAngle = 225 * (Math.PI / 180);  // 225° around Y (facing top-left)
+    const rotationAngle = 45 * (Math.PI / 180);  // 45° around Y — matches OG Bloxorz view
 
     this.camera.position.set(
       distance * Math.cos(elevationAngle) * Math.sin(rotationAngle),
@@ -69,7 +69,7 @@ export class GameRenderer {
     // Position camera relative to grid center
     const distance = 40;
     const elevationAngle = 30 * (Math.PI / 180);
-    const rotationAngle = 225 * (Math.PI / 180);
+    const rotationAngle = 45 * (Math.PI / 180);
 
     this.camera.position.set(
       centerX + distance * Math.cos(elevationAngle) * Math.sin(rotationAngle),
