@@ -1,4 +1,4 @@
-import { Element, BlockOrientation, TileType } from '@fbwb/shared';
+import { Element, BlockOrientation, TileType, getAllLevels } from '@fbwb/shared';
 import { GameRenderer } from './renderer/scene.js';
 import { GridMesh } from './entities/gridMesh.js';
 import { BlockMesh } from './entities/blockMesh.js';
@@ -399,7 +399,7 @@ function buildLevelComplete() {
   nextLevelBtn.style.padding = '12px 28px';
   nextLevelBtn.addEventListener('click', () => {
     const nextId = currentLevelId + 1;
-    if (nextId <= 34) {
+    if (nextId <= getAllLevels().length) {
       network.sendSelectLevel(nextId);
     }
   });
@@ -452,7 +452,8 @@ function showLevelSelect() {
   const grid = document.createElement('div');
   grid.className = 'ls-grid';
 
-  for (let i = 1; i <= 34; i++) {
+  const totalLevels = getAllLevels().length;
+  for (let i = 1; i <= totalLevels; i++) {
     const btnWrapper = document.createElement('div');
     btnWrapper.style.position = 'relative';
     btnWrapper.style.marginBottom = '18px';
