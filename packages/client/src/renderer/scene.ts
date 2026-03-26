@@ -29,8 +29,8 @@ export class GameRenderer {
     // rotated 45° around Y axis. This creates the classic isometric
     // perspective where the grid runs diagonally.
     const distance = 40;
-    const elevationAngle = 30 * (Math.PI / 180); // 30° from horizontal
-    const rotationAngle = 45 * (Math.PI / 180);  // 45° around Y — matches OG Bloxorz view
+    const elevationAngle = 35 * (Math.PI / 180); // 35° from horizontal (steeper, like OG)
+    const rotationAngle = 315 * (Math.PI / 180);  // 315° — ArrowUp=upper-right, ArrowRight=lower-right (OG Bloxorz)
 
     this.camera.position.set(
       distance * Math.cos(elevationAngle) * Math.sin(rotationAngle),
@@ -68,8 +68,8 @@ export class GameRenderer {
 
     // Position camera relative to grid center
     const distance = 40;
-    const elevationAngle = 30 * (Math.PI / 180);
-    const rotationAngle = 45 * (Math.PI / 180);
+    const elevationAngle = 35 * (Math.PI / 180);
+    const rotationAngle = 315 * (Math.PI / 180);
 
     this.camera.position.set(
       centerX + distance * Math.cos(elevationAngle) * Math.sin(rotationAngle),
