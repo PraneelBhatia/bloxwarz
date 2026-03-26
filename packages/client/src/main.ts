@@ -205,6 +205,7 @@ let hudMoveCounter: HTMLElement;
 let hudRoomCode: HTMLElement;
 let hudLevelName: HTMLElement;
 let hudConnectionDot: HTMLElement;
+let hudFallOffToggle: HTMLElement;
 
 function buildHUD() {
   hudDiv.className = 'hud-panel';
@@ -246,6 +247,24 @@ function buildHUD() {
   hudMoveCounter.className = 'hud-value';
   moveItem.appendChild(hudMoveCounter);
   hudDiv.appendChild(moveItem);
+
+  // Fall off edge toggle
+  const fallOffItem = document.createElement('div');
+  fallOffItem.className = 'hud-item';
+  fallOffItem.style.cursor = 'pointer';
+  const fallOffLabel = document.createElement('span');
+  fallOffLabel.className = 'hud-label';
+  fallOffLabel.textContent = 'Fall Off Edge';
+  fallOffItem.appendChild(fallOffLabel);
+  hudFallOffToggle = document.createElement('span');
+  hudFallOffToggle.className = 'hud-value';
+  hudFallOffToggle.textContent = 'ON';
+  hudFallOffToggle.style.color = '#4caf50';
+  fallOffItem.appendChild(hudFallOffToggle);
+  fallOffItem.addEventListener('click', () => {
+    network.toggleFallOff();
+  });
+  hudDiv.appendChild(fallOffItem);
 
   // Level select button
   const levelSelectBtn = document.createElement('button');
@@ -593,6 +612,10 @@ network.onStateChange = (state: GameState) => {
   if (hudLevelName) {
     const name = LEVEL_NAMES[currentLevelId];
     hudLevelName.textContent = name ? name : 'Level ' + currentLevelId;
+  }
+  if (hudFallOffToggle && state.settings) {
+    hudFallOffToggle.textContent = state.settings.fallOffEdge ? 'ON' : 'OFF';
+    hudFallOffToggle.style.color = state.settings.fallOffEdge ? '#4caf50' : '#ff4444';
   }
   // Update level complete moves
   if (lcMovesValue) {

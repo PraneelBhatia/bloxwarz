@@ -24,6 +24,7 @@ export interface GameState {
   tilesJson: string;
   player1: { sessionId: string; assignedElement: string; connected: boolean };
   player2: { sessionId: string; assignedElement: string; connected: boolean };
+  settings: { fallOffEdge: boolean };
 }
 
 export class NetworkClient {
@@ -75,6 +76,10 @@ export class NetworkClient {
 
   sendSelectLevel(levelId: number) {
     this.room?.send('selectLevel', { levelId });
+  }
+
+  toggleFallOff() {
+    this.room?.send('toggleFallOff', {});
   }
 
   getSessionId(): string | undefined {

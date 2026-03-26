@@ -30,6 +30,10 @@ interface PlainPlayer {
   connected: boolean;
 }
 
+interface GameSettings {
+  fallOffEdge: boolean;
+}
+
 interface PlainGameState {
   phase: string;
   levelId: number;
@@ -40,6 +44,7 @@ interface PlainGameState {
   waterBlock: PlainBlock;
   player1: PlainPlayer;
   player2: PlainPlayer;
+  settings: GameSettings;
 }
 
 export class GameRoom extends Room<GameStateSchema> {
@@ -48,6 +53,8 @@ export class GameRoom extends Room<GameStateSchema> {
   private currentTiles: TileType[][] = [];
   private currentLevel: LevelData | undefined;
   private playerCount = 0;
+
+  private fallOffEdge = true; // setting: can blocks fall off edges?
 
   private gameState: PlainGameState = {
     phase: 'waiting',
@@ -59,6 +66,7 @@ export class GameRoom extends Room<GameStateSchema> {
     waterBlock: { position: { x: 0, y: 0 }, orientation: 'standing', element: 'water', alive: true },
     player1: { sessionId: '', assignedElement: '', connected: false },
     player2: { sessionId: '', assignedElement: '', connected: false },
+    settings: { fallOffEdge: true },
   };
 
   onCreate() {
@@ -80,6 +88,12 @@ export class GameRoom extends Room<GameStateSchema> {
 
     this.onMessage('selectLevel', (_client, data: { levelId: number }) => {
       this.loadLevel(data.levelId);
+    });
+
+    this.onMessage('toggleFallOff', () => {
+      this.fallOffEdge = !this.fallOffEdge;
+      this.gameState.settings.fallOffEdge = this.fallOffEdge;
+      this.broadcast('state', this.gameState);
     });
   }
 
@@ -162,16 +176,19 @@ export class GameRoom extends Room<GameStateSchema> {
     }
 
     if (fellOff) {
-      // Apply the move visually (block rolls off), then kill and restart
-      block.position.x = rolled.position.x;
-      block.position.y = rolled.position.y;
-      block.orientation = rolled.orientation;
-      block.alive = false;
-      this.gameState.moveCount++;
-      this.broadcast('state', this.gameState);
-      this.clock.setTimeout(() => {
-        this.loadLevel(this.gameState.levelId);
-      }, 2000);
+      if (this.fallOffEdge) {
+        // Block falls off — kill and auto-restart
+        block.position.x = rolled.position.x;
+        block.position.y = rolled.position.y;
+        block.orientation = rolled.orientation;
+        block.alive = false;
+        this.gameState.moveCount++;
+        this.broadcast('state', this.gameState);
+        this.clock.setTimeout(() => {
+          this.loadLevel(this.gameState.levelId);
+        }, 2000);
+      }
+      // If fallOffEdge disabled, silently reject the move
       return;
     }
 
