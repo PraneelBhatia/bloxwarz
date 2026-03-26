@@ -148,13 +148,31 @@ export class GameRoom extends Room<GameStateSchema> {
     const height = this.currentTiles.length;
     const width = this.currentTiles[0]?.length ?? 0;
 
+    // Check if block falls off the edge (out of bounds or empty tile)
+    let fellOff = false;
     for (const cell of footprint) {
       if (cell.x < 0 || cell.y < 0 || cell.x >= width || cell.y >= height) {
-        return; // Out of bounds — reject
+        fellOff = true;
+        break;
       }
       if (this.currentTiles[cell.y][cell.x] === TileType.Empty) {
-        return; // Empty tile — reject
+        fellOff = true;
+        break;
       }
+    }
+
+    if (fellOff) {
+      // Apply the move visually (block rolls off), then kill and restart
+      block.position.x = rolled.position.x;
+      block.position.y = rolled.position.y;
+      block.orientation = rolled.orientation;
+      block.alive = false;
+      this.gameState.moveCount++;
+      this.broadcast('state', this.gameState);
+      this.clock.setTimeout(() => {
+        this.loadLevel(this.gameState.levelId);
+      }, 2000);
+      return;
     }
 
     // Apply move
@@ -174,6 +192,12 @@ export class GameRoom extends Room<GameStateSchema> {
     const fpTiles = getFootprintTiles(updatedBlock, this.currentTiles);
     if (checkHazard(updatedBlock, fpTiles)) {
       block.alive = false;
+      // Broadcast death immediately, then auto-restart after 2 seconds
+      this.broadcast('state', this.gameState);
+      this.clock.setTimeout(() => {
+        this.loadLevel(this.gameState.levelId);
+      }, 2000);
+      return;
     }
 
     // Check for switches
