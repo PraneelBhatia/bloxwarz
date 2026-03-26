@@ -484,6 +484,10 @@ network.onStateChange = (state: GameState) => {
     try {
       const tiles: TileType[][] = JSON.parse(state.tilesJson);
       gridMesh.updateTiles(tiles);
+      // Center camera on the grid when level loads
+      if (tiles.length > 0 && tiles[0].length > 0) {
+        renderer.centerOnGrid(tiles[0].length, tiles.length);
+      }
     } catch {
       // Ignore JSON parse errors
     }
