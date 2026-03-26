@@ -15,20 +15,44 @@ const BLOCK_STYLES: Record<Element, { color: number; emissive: number }> = {
 
 const ROLL_DURATION = 0.3; // seconds
 
+// Block half-dimensions (geometry is 0.9 × 1.8 × 0.9)
+const HALF_W = 0.45;   // half of 0.9 (x and z)
+const HALF_H = 0.9;    // half of 1.8 (tall axis)
+
 interface BlockPose {
   position: { x: number; y: number };
   orientation: BlockOrientation;
 }
 
-interface RollAnimation {
-  from: BlockPose;
-  to: BlockPose;
-  startTime: number;
+enum RollDirection {
+  North,
+  South,
+  East,
+  West,
 }
 
 /**
- * Returns the world-space position and euler rotation for a given grid pose,
- * matching the logic in setPositionImmediate.
+ * Describes how to animate a single roll: the pivot point on the ground,
+ * the rotation axis, the rotation angle, and the final pose.
+ */
+interface RollSpec {
+  pivotWorld: THREE.Vector3;   // world-space pivot point (on the ground)
+  rotationAxis: THREE.Vector3; // unit axis to rotate around
+  rotationAngle: number;       // total rotation in radians (always ±PI/2)
+}
+
+interface PivotAnimation {
+  spec: RollSpec;
+  from: BlockPose;
+  to: BlockPose;
+  startTime: number;
+  // Cached starting state (mesh position and quaternion relative to pivot)
+  startLocalPos: THREE.Vector3;
+  startLocalQuat: THREE.Quaternion;
+}
+
+/**
+ * Returns the world-space position and euler rotation for a given grid pose.
  */
 function poseToWorld(
   renderer: GameRenderer,
@@ -38,20 +62,176 @@ function poseToWorld(
   switch (pose.orientation) {
     case BlockOrientation.Standing:
       return {
-        pos: new THREE.Vector3(worldPos.x, 0.9, worldPos.z),
+        pos: new THREE.Vector3(worldPos.x, HALF_H, worldPos.z),
         rot: new THREE.Euler(0, 0, 0),
       };
     case BlockOrientation.LyingX:
       return {
-        pos: new THREE.Vector3(worldPos.x + 0.5, 0.45, worldPos.z),
+        pos: new THREE.Vector3(worldPos.x + 0.5, HALF_W, worldPos.z),
         rot: new THREE.Euler(0, 0, Math.PI / 2),
       };
     case BlockOrientation.LyingY:
       return {
-        pos: new THREE.Vector3(worldPos.x, 0.45, worldPos.z - 0.5),
+        pos: new THREE.Vector3(worldPos.x, HALF_W, worldPos.z - 0.5),
         rot: new THREE.Euler(Math.PI / 2, 0, 0),
       };
   }
+}
+
+/**
+ * Infer the roll direction from from-pose to to-pose.
+ */
+function inferDirection(from: BlockPose, to: BlockPose): RollDirection {
+  const dx = to.position.x - from.position.x;
+  const dy = to.position.y - from.position.y;
+
+  // One of dx/dy will be non-zero
+  if (dx > 0) return RollDirection.East;
+  if (dx < 0) return RollDirection.West;
+  if (dy > 0) return RollDirection.North;
+  return RollDirection.South;
+}
+
+/**
+ * Calculate the pivot point, rotation axis, and angle for a roll.
+ *
+ * The pivot is the leading bottom edge of the block in the direction of
+ * movement, sitting on the ground (y=0).
+ *
+ * Rotation axis is perpendicular to the direction of movement:
+ *   - North/South movement → rotate around X axis
+ *   - East/West movement → rotate around Z axis
+ *
+ * Coordinate system:
+ *   - World X increases east
+ *   - World Y is up
+ *   - World Z decreases going north (gridToWorld: z = -gridY + offset)
+ *   - Tile size = 1
+ */
+function computeRollSpec(
+  renderer: GameRenderer,
+  from: BlockPose,
+  to: BlockPose,
+  direction: RollDirection,
+): RollSpec {
+  const fromWorld = poseToWorld(renderer, from);
+  const centerPos = fromWorld.pos;
+
+  let pivotWorld: THREE.Vector3;
+  let rotationAxis: THREE.Vector3;
+  let rotationAngle: number;
+
+  switch (from.orientation) {
+    case BlockOrientation.Standing:
+      // Block is standing upright. Center at (cx, 0.9, cz).
+      // Bottom face is 0.9×0.9 centered at (cx, 0, cz).
+      switch (direction) {
+        case RollDirection.North:
+          // Leading edge is the north edge of the base: z = cz - HALF_W
+          // Pivot at (cx, 0, cz - HALF_W). Rotate around X axis.
+          // Block tips north (negative Z) → rotation is negative around X
+          pivotWorld = new THREE.Vector3(centerPos.x, 0, centerPos.z - HALF_W);
+          rotationAxis = new THREE.Vector3(1, 0, 0);
+          rotationAngle = -Math.PI / 2;
+          break;
+        case RollDirection.South:
+          // Leading edge is the south edge of the base: z = cz + HALF_W
+          pivotWorld = new THREE.Vector3(centerPos.x, 0, centerPos.z + HALF_W);
+          rotationAxis = new THREE.Vector3(1, 0, 0);
+          rotationAngle = Math.PI / 2;
+          break;
+        case RollDirection.East:
+          // Leading edge is the east edge of the base: x = cx + HALF_W
+          pivotWorld = new THREE.Vector3(centerPos.x + HALF_W, 0, centerPos.z);
+          rotationAxis = new THREE.Vector3(0, 0, 1);
+          rotationAngle = -Math.PI / 2;
+          break;
+        case RollDirection.West:
+          // Leading edge is the west edge of the base: x = cx - HALF_W
+          pivotWorld = new THREE.Vector3(centerPos.x - HALF_W, 0, centerPos.z);
+          rotationAxis = new THREE.Vector3(0, 0, 1);
+          rotationAngle = Math.PI / 2;
+          break;
+      }
+      break;
+
+    case BlockOrientation.LyingX:
+      // Block lying along X axis. Center at (cx, 0.45, cz).
+      // The 1.8 dimension is along X, so it extends ±0.9 in X from center.
+      // The 0.9 dimensions are along Y (height=0.9) and Z.
+      // Bottom face is a 1.8×0.9 rectangle on the ground.
+      switch (direction) {
+        case RollDirection.East:
+          // Leading edge is east end: x = cx + HALF_H (0.9)
+          // This is the "short" edge. Block will stand up.
+          pivotWorld = new THREE.Vector3(centerPos.x + HALF_H, 0, centerPos.z);
+          rotationAxis = new THREE.Vector3(0, 0, 1);
+          rotationAngle = -Math.PI / 2;
+          break;
+        case RollDirection.West:
+          // Leading edge is west end: x = cx - HALF_H
+          pivotWorld = new THREE.Vector3(centerPos.x - HALF_H, 0, centerPos.z);
+          rotationAxis = new THREE.Vector3(0, 0, 1);
+          rotationAngle = Math.PI / 2;
+          break;
+        case RollDirection.North:
+          // Leading edge is north edge: z = cz - HALF_W
+          // Block stays lying along X.
+          pivotWorld = new THREE.Vector3(centerPos.x, 0, centerPos.z - HALF_W);
+          rotationAxis = new THREE.Vector3(1, 0, 0);
+          rotationAngle = -Math.PI / 2;
+          break;
+        case RollDirection.South:
+          // Leading edge is south edge: z = cz + HALF_W
+          pivotWorld = new THREE.Vector3(centerPos.x, 0, centerPos.z + HALF_W);
+          rotationAxis = new THREE.Vector3(1, 0, 0);
+          rotationAngle = Math.PI / 2;
+          break;
+      }
+      break;
+
+    case BlockOrientation.LyingY:
+      // Block lying along Z axis (grid Y → world -Z). Center at (cx, 0.45, cz).
+      // The 1.8 dimension is along Z, so it extends ±0.9 in Z from center.
+      // The 0.9 dimensions are along X and Y (height=0.9).
+      // Bottom face is a 0.9×1.8 rectangle on the ground.
+      switch (direction) {
+        case RollDirection.North:
+          // Leading edge is north end: z = cz - HALF_H (0.9)
+          // Block will stand up.
+          pivotWorld = new THREE.Vector3(centerPos.x, 0, centerPos.z - HALF_H);
+          rotationAxis = new THREE.Vector3(1, 0, 0);
+          rotationAngle = -Math.PI / 2;
+          break;
+        case RollDirection.South:
+          // Leading edge is south end: z = cz + HALF_H
+          pivotWorld = new THREE.Vector3(centerPos.x, 0, centerPos.z + HALF_H);
+          rotationAxis = new THREE.Vector3(1, 0, 0);
+          rotationAngle = Math.PI / 2;
+          break;
+        case RollDirection.East:
+          // Leading edge is east edge: x = cx + HALF_W
+          // Block stays lying along Z.
+          pivotWorld = new THREE.Vector3(centerPos.x + HALF_W, 0, centerPos.z);
+          rotationAxis = new THREE.Vector3(0, 0, 1);
+          rotationAngle = -Math.PI / 2;
+          break;
+        case RollDirection.West:
+          // Leading edge is west edge: x = cx - HALF_W
+          pivotWorld = new THREE.Vector3(centerPos.x - HALF_W, 0, centerPos.z);
+          rotationAxis = new THREE.Vector3(0, 0, 1);
+          rotationAngle = Math.PI / 2;
+          break;
+      }
+      break;
+  }
+
+  return { pivotWorld: pivotWorld!, rotationAxis: rotationAxis!, rotationAngle: rotationAngle! };
+}
+
+// Smooth easing for the roll animation
+function easeInOutQuad(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 export class BlockMesh {
@@ -61,7 +241,7 @@ export class BlockMesh {
   private element: Element;
 
   // Animation state
-  private currentAnimation: RollAnimation | null = null;
+  private currentAnimation: PivotAnimation | null = null;
   private moveQueue: Array<{ from: BlockPose; to: BlockPose }> = [];
 
   // The settled pose — updated when an animation completes
@@ -141,25 +321,25 @@ export class BlockMesh {
       const anim = this.currentAnimation;
       const rawT = (time - anim.startTime) / ROLL_DURATION;
       const t = Math.min(rawT, 1);
+      const easedT = easeInOutQuad(t);
 
-      const fromWorld = poseToWorld(this.renderer, anim.from);
-      const toWorld = poseToWorld(this.renderer, anim.to);
+      // The current fractional rotation angle
+      const currentAngle = anim.spec.rotationAngle * easedT;
 
-      // Lerp position
-      const px = fromWorld.pos.x + (toWorld.pos.x - fromWorld.pos.x) * t;
-      const pz = fromWorld.pos.z + (toWorld.pos.z - fromWorld.pos.z) * t;
+      // Build a quaternion for rotating around the axis by currentAngle
+      const pivotQuat = new THREE.Quaternion().setFromAxisAngle(
+        anim.spec.rotationAxis,
+        currentAngle,
+      );
 
-      // Arc: lerp the base Y then add a sine bump so the block rises mid-roll
-      const py = fromWorld.pos.y + (toWorld.pos.y - fromWorld.pos.y) * t
-        + Math.sin(t * Math.PI) * 0.3;
+      // The mesh position relative to pivot, rotated by the current angle
+      const rotatedLocalPos = anim.startLocalPos.clone().applyQuaternion(pivotQuat);
 
-      this.mesh.position.set(px, py, pz);
+      // Set mesh world position = pivot + rotated local position
+      this.mesh.position.copy(anim.spec.pivotWorld).add(rotatedLocalPos);
 
-      // Slerp rotation via quaternions
-      const qFrom = new THREE.Quaternion().setFromEuler(fromWorld.rot);
-      const qTo = new THREE.Quaternion().setFromEuler(toWorld.rot);
-      const q = qFrom.clone().slerp(qTo, t);
-      this.mesh.quaternion.copy(q);
+      // Set mesh world quaternion = pivotQuat * startLocalQuat
+      this.mesh.quaternion.copy(pivotQuat).multiply(anim.startLocalQuat);
 
       if (t >= 1) {
         // Snap to exact final state
@@ -186,9 +366,25 @@ export class BlockMesh {
   // ---- private helpers ----
 
   private _startAnimation(from: BlockPose, to: BlockPose, now: number) {
-    this.currentAnimation = { from, to, startTime: now };
-    // Immediately place mesh at the from pose so there's no flicker
+    // Place mesh at the from pose
     this._applyPose(from);
+
+    // Compute the roll specification
+    const direction = inferDirection(from, to);
+    const spec = computeRollSpec(this.renderer, from, to, direction);
+
+    // Cache the mesh's starting position/quaternion relative to the pivot
+    const startLocalPos = this.mesh.position.clone().sub(spec.pivotWorld);
+    const startLocalQuat = this.mesh.quaternion.clone();
+
+    this.currentAnimation = {
+      spec,
+      from,
+      to,
+      startTime: now,
+      startLocalPos,
+      startLocalQuat,
+    };
   }
 
   private _applyPose(pose: BlockPose) {
